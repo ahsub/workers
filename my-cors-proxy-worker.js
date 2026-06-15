@@ -78,25 +78,43 @@ export default {
       }
 
       // ─── PFAD C: Yahoo Finance ────────────────────────────────
+      // Crumb + Cookie werden in globalThis gecacht (5min TTL)
+      // damit nicht jeder der 40+ Ticker-Calls einen neuen Crumb holt
       if (isYahoo) {
-        const crumbRes = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
-          redirect: "follow",
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://finance.yahoo.com/",
+        const now = Date.now();
+        const CRUMB_TTL = 5 * 60 * 1000; // 5 Minuten
+
+        // Crumb aus Cache oder neu holen
+        if (!globalThis._yfCrumb || !globalThis._yfCookie ||
+            (now - (globalThis._yfCrumbTs || 0)) > CRUMB_TTL) {
+          try {
+            const crumbRes = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
+              redirect: "follow",
+              headers: {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept": "text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://finance.yahoo.com/",
+              }
+            });
+            const cookies = [];
+            crumbRes.headers.forEach((val, key) => {
+              if (key.toLowerCase() === "set-cookie") {
+                const nv = val.split(";")[0].trim();
+                if (nv.includes("=")) cookies.push(nv);
+              }
+            });
+            globalThis._yfCrumb = (await crumbRes.text()).trim();
+            globalThis._yfCookie = cookies.join("; ");
+            globalThis._yfCrumbTs = now;
+          } catch(e) {
+            globalThis._yfCrumb = "";
+            globalThis._yfCookie = "";
           }
-        });
-        const cookies = [];
-        crumbRes.headers.forEach((val, key) => {
-          if (key.toLowerCase() === "set-cookie") {
-            const nv = val.split(";")[0].trim();
-            if (nv.includes("=")) cookies.push(nv);
-          }
-        });
-        const crumb = (await crumbRes.text()).trim();
-        const cookieStr = cookies.join("; ");
+        }
+
+        const crumb = globalThis._yfCrumb || "";
+        const cookieStr = globalThis._yfCookie || "";
         const sep = targetUrl.includes("?") ? "&" : "?";
         const finalUrl = (crumb && crumb.length > 2 && crumb.length < 60)
           ? `${targetUrl}${sep}crumb=${encodeURIComponent(crumb)}` : targetUrl;
@@ -110,13 +128,23 @@ export default {
             ...(cookieStr ? { "Cookie": cookieStr } : {}),
           }
         });
-        const body = await dataRes.text();
+        // Bei 401 (abgelaufener Crumb): Cache leeren und einmal retry
+        if (dataRes.status === 401 || dataRes.status === 403) {
+          globalThis._yfCrumb = "";
+          globalThis._yfCookie = "";
+          globalThis._yfCrumbTs = 0;
+          return new Response(
+            JSON.stringify({ error: "yahoo_error", status: dataRes.status, retry: true }),
+            { status: dataRes.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
         if (dataRes.status >= 400) {
           return new Response(
             JSON.stringify({ error: "yahoo_error", status: dataRes.status }),
             { status: dataRes.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
+        const body = await dataRes.text();
         return new Response(body, {
           status: dataRes.status,
           headers: { ...corsHeaders, "Content-Type": "application/json; charset=utf-8", "X-Source": "yahoo" }

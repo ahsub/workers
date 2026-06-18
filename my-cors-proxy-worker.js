@@ -20,16 +20,17 @@ export default {
       });
     }
 
-    const isYahoo     = targetUrl.includes("yahoo.com");
-    const isTwelve    = targetUrl.includes("twelvedata.com");
-    const isFinnhub   = targetUrl.includes("finnhub.io");
-    const isAnthropic = targetUrl.includes("anthropic.com");
+    const isYahoo        = targetUrl.includes("yahoo.com");
+    const isTwelve       = targetUrl.includes("twelvedata.com");
+    const isFinnhub      = targetUrl.includes("finnhub.io");
+    const isAnthropic    = targetUrl.includes("anthropic.com");
+    const isSqueeze      = targetUrl.includes("squeezemetrics.com");
+    const isCBOE         = targetUrl.includes("cboe.com");
 
     try {
 
       // ─── PFAD A: Anthropic API ────────────────────────────────
       if (isAnthropic) {
-        // Key aus URL-Parameter ODER x-ant-key Header
         const antKey = url.searchParams.get("ant_key")
           || request.headers.get("x-ant-key")
           || request.headers.get("x-api-key")
@@ -78,13 +79,10 @@ export default {
       }
 
       // ─── PFAD C: Yahoo Finance ────────────────────────────────
-      // Crumb + Cookie werden in globalThis gecacht (5min TTL)
-      // damit nicht jeder der 40+ Ticker-Calls einen neuen Crumb holt
       if (isYahoo) {
         const now = Date.now();
-        const CRUMB_TTL = 5 * 60 * 1000; // 5 Minuten
+        const CRUMB_TTL = 5 * 60 * 1000;
 
-        // Crumb aus Cache oder neu holen
         if (!globalThis._yfCrumb || !globalThis._yfCookie ||
             (now - (globalThis._yfCrumbTs || 0)) > CRUMB_TTL) {
           try {
@@ -128,7 +126,6 @@ export default {
             ...(cookieStr ? { "Cookie": cookieStr } : {}),
           }
         });
-        // Bei 401 (abgelaufener Crumb): Cache leeren und einmal retry
         if (dataRes.status === 401 || dataRes.status === 403) {
           globalThis._yfCrumb = "";
           globalThis._yfCookie = "";
@@ -148,6 +145,61 @@ export default {
         return new Response(body, {
           status: dataRes.status,
           headers: { ...corsHeaders, "Content-Type": "application/json; charset=utf-8", "X-Source": "yahoo" }
+        });
+      }
+
+      // ─── PFAD E: squeezemetrics (DIX/GEX CSV) ────────────────
+      if (isSqueeze) {
+        const res = await fetch(targetUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/csv, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://squeezemetrics.com/monitor/",
+            "Origin": "https://squeezemetrics.com",
+          }
+        });
+        if (!res.ok) {
+          return new Response(
+            JSON.stringify({ error: "squeeze_error", status: res.status }),
+            { status: res.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        const body = await res.text();
+        return new Response(body, {
+          status: res.status,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "text/csv; charset=utf-8",
+            "X-Source": "squeezemetrics",
+          }
+        });
+      }
+
+      // ─── PFAD F: CBOE (PCR CSV) ───────────────────────────────
+      if (isCBOE) {
+        const res = await fetch(targetUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/csv, text/plain, application/json, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.cboe.com/",
+          }
+        });
+        if (!res.ok) {
+          return new Response(
+            JSON.stringify({ error: "cboe_error", status: res.status }),
+            { status: res.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        const body = await res.text();
+        return new Response(body, {
+          status: res.status,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "text/csv; charset=utf-8",
+            "X-Source": "cboe",
+          }
         });
       }
 

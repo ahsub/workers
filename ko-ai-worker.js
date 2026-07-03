@@ -1,7 +1,19 @@
 /**
  * ko-ai.ahildebrand.workers.dev
  * ══════════════════════════════════════════════════════════════════
- * UnderlyingIQ — KI-Proxy Worker v1.6
+ * UnderlyingIQ — KI-Proxy Worker v1.7
+ *
+ * NEU in v1.7 (04.07.2026):
+ *   - OWNER_TOKEN (neues CF Secret, optional): zweiter gültiger Bearer-Token
+ *     für den Betreiber. Requests damit sind von allen Rate-Limits ausgenommen —
+ *     IP-unabhängig (löst das VPN-Problem der IP-basierten Exempt-Liste) —
+ *     und in den Logs über eigenen tokenHash von der Beta-Nutzung trennbar.
+ *     Einrichtung: Dashboard → Settings → Variables and Secrets → OWNER_TOKEN
+ *     anlegen; denselben Wert in der eigenen App unter Einstellungen →
+ *     KI-Zugangs-Token eintragen. Ohne gesetztes Secret ändert sich nichts.
+ *   - Bekannte Phase-1-Grenze dokumentiert: IP-scoped Limits sind durch
+ *     VPN-IP-Rotation umgehbar (Restrisiko geschlossene Beta; ab Phase-2-JWT
+ *     obsolet). RATE_LIMIT_EXEMPT_HASHES bleibt als Fallback erhalten.
  *
  * NEU in v1.6 (04.07.2026):
  *   - Rate-Limiting AKTIV verdrahtet (vorher: Patch-Block v1.0 eingefügt,
@@ -691,11 +703,12 @@ export default {
       });
     }
 
-    // ── AUTH (Phase 1: statischer Bearer Token) ──────────────────
+    // ── AUTH (Phase 1: statischer Bearer Token + optionaler OWNER_TOKEN) ──
     const authHeader = request.headers.get('Authorization') || '';
     const token      = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    const isOwner    = !!env.OWNER_TOKEN && token === env.OWNER_TOKEN;
 
-    if (!env.STATIC_TOKEN || token !== env.STATIC_TOKEN) {
+    if ((!env.STATIC_TOKEN || token !== env.STATIC_TOKEN) && !isOwner) {
       logRequest(env, token || 'INVALID', 'AUTH_FAIL', origin,
         request.headers.get('CF-Ray') || '', false);
       return jsonResponse({ error: 'Unauthorized' }, 401, origin);
@@ -726,12 +739,15 @@ export default {
       return jsonResponse({ error: 'Kein System-Prompt für action' }, 500, origin);
     }
 
-    // ── RATE-LIMIT (v1.6) — vor dem Anthropic-Call ────────────────
+    // ── RATE-LIMIT (v1.6/v1.7) — vor dem Anthropic-Call ───────────
     // Phase 1: EIN statischer Token für alle → Subjekt = hash(Token|IP),
     // damit das Limit näherungsweise pro Nutzer statt global wirkt.
+    // v1.7: OWNER_TOKEN ist vollständig ausgenommen (IP-unabhängig).
     const clientIP    = request.headers.get('CF-Connecting-IP') || 'no-ip';
     const subjectHash = await hashToken(`${token}|${clientIP}`);
-    const rl          = await checkRateLimit(env, subjectHash, action);
+    const rl          = isOwner
+      ? { allowed: true, used: 0, limit: Infinity }
+      : await checkRateLimit(env, subjectHash, action);
 
     if (!rl.allowed) {
       await logRequest(env, token, `${action}_RATELIMIT`, origin,

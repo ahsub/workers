@@ -1,7 +1,18 @@
 /**
  * ko-ai.ahildebrand.workers.dev
  * ══════════════════════════════════════════════════════════════════
- * UnderlyingIQ — KI-Proxy Worker v1.7
+ * UnderlyingIQ — KI-Proxy Worker v1.8
+ *
+ * NEU in v1.8 (08.07.2026):
+ *   - Datum-Grounding (Anti-Halluzination): Serverseitig wird das heutige
+ *     Datum (Europe/Berlin, de-DE) als erste Zeile jedes System-Prompts
+ *     injiziert. Das Modell muss kein Datum mehr aus dem Prompt lesen —
+ *     und kann daher auch keines mehr erfinden, wenn der Frontend-Prompt
+ *     kein Datum enthält (Root Cause des Scanner-KI-Datum-Bugs, entdeckt
+ *     im UX-Review 07.07.2026).
+ *   - Deep-Dive-Template: Pflichtzeile "**Datum:** [Datum aus Prompt]"
+ *     → "[HEUTIGES DATUM aus System-Kontext — nicht erfinden]", damit
+ *     die Template-Anweisung die Grounding-Quelle korrekt referenziert.
  *
  * NEU in v1.7 (04.07.2026):
  *   - OWNER_TOKEN (neues CF Secret, optional): zweiter gültiger Bearer-Token
@@ -222,7 +233,7 @@ const SYSTEM_PROMPTS = {
     '- Kein Weichspüler, keine Einschränkungen, direkte Handlungsanweisungen\n' +
     'PFLICHT-OUTPUT-STRUKTUR:\n\n' +
     '## [TICKER] — [UNTERNEHMENSNAME]\n' +
-    '**Datum:** [Datum aus Prompt]\n\n' +
+    '**Datum:** [HEUTIGES DATUM aus System-Kontext — nicht erfinden]\n\n' +
     '### MARKTLAGE-KONTEXT\n' +
     '[2 Sätze: aktuelles Regime + wie der Titel dazu passt]\n\n' +
     '### TECHNISCHE BEWERTUNG\n' +
@@ -734,10 +745,22 @@ export default {
       return jsonResponse({ error: `Unbekannte action: ${action}` }, 400, origin);
     }
 
-    const systemPrompt = selectSystemPrompt(action, expert_mode);
-    if (!systemPrompt) {
+    const rawSystemPrompt = selectSystemPrompt(action, expert_mode);
+    if (!rawSystemPrompt) {
       return jsonResponse({ error: 'Kein System-Prompt für action' }, 500, origin);
     }
+    // ── DATUM-GROUNDING (Anti-Halluzination) ─────────────────────
+    // Serverseitig injiziert, damit das Modell niemals ein Datum
+    // erfinden muss — auch wenn der Frontend-Prompt keines enthält.
+    const todayDE = new Date().toLocaleDateString('de-DE', {
+      timeZone: 'Europe/Berlin',
+      day: '2-digit', month: '2-digit', year: 'numeric'
+    });
+    const systemPrompt =
+      'HEUTIGES DATUM (Berlin): ' + todayDE +
+      ' — Verwende ausschließlich dieses Datum. Nenne NIEMALS ein anderes Datum, ' +
+      'es sei denn, es steht explizit in den Nutzerdaten.\n\n' +
+      rawSystemPrompt;
 
     // ── RATE-LIMIT (v1.6/v1.7) — vor dem Anthropic-Call ───────────
     // Phase 1: EIN statischer Token für alle → Subjekt = hash(Token|IP),

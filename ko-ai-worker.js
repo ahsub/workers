@@ -136,11 +136,13 @@ const MAX_PENDING_ENTRIES = 200;                          // Cap gegen Spam/Bloa
 // Limits PRO TAG je Subjekt (Phase 1: hash(Token|IP) ≈ pro Nutzer).
 // Keys = Action-Namen aus ACTION_CONFIG. Nicht gelistete Actions → default.
 const RATE_LIMITS = {
-  deep_dive:     5,   // Deep-Dive-Analysen
-  morning:       2,   // Morning Briefings
-  dark_pool:     3,   // Dark-Pool-KI
-  eic:           5,   // EIC Investment-Cases
-  ki_briefing:   6,   // Ticker-KI-Briefings
+  deep_dive:     5,
+  morning:       20,  // TEMP hochgesetzt (10.07.2026) für aktive Phase-0.5-Testphase
+                       // — vorher 2, was Axels eigenes Testen blockierte. Vor Beta-
+                       // Launch wieder auf 2-3 senken ODER Owner-Exempt-Hash eintragen.
+  dark_pool:     3,
+  eic:           5,
+  ki_briefing:   6,
   meta_analysis: 3,
   default:      10,   // makro, oversold und alles Übrige zusammen
 };

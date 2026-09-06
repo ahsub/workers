@@ -1,7 +1,26 @@
 /**
  * ko-ai.ahildebrand.workers.dev
  * ══════════════════════════════════════════════════════════════════
- * UnderlyingIQ — KI-Proxy Worker v1.17
+ * UnderlyingIQ — KI-Proxy Worker v1.18
+ *
+ * NEU in v1.18 (07.09.2026, Master-Prompt-Migration, Axel-Entscheidung):
+ *   - ki_briefing_expert() von einem langen, eigenstaendig strukturgebenden
+ *     Prompt (eigenes AKTION/ENTRY/STOP/ZIEL-Format, Axels reale Portfolio-
+ *     daten fest im Text) auf einen kurzen, generischen Verhaltensboden
+ *     zurueckgebaut — symmetrisch zu ki_briefing_public(). Grund: ko-
+ *     prompts.js hatte pro Strategie einen EIGENEN, anderen ctx.isEic-Zweig
+ *     mit wieder anderer Struktur als dieser Server-Prompt; zwei konkurrie-
+ *     rende Strukturgeber, deren Outputs sich im Live-Test (csp_wheel,
+ *     Options-Desk) unkontrolliert mischten. Die eigentliche Substanz (UIQ
+ *     EIC Master Prompt, Ebenen 1-22 + §23 Handlungsempfehlung) lebt jetzt
+ *     ausschliesslich im User-Payload (_eicMasterPrompt() in ko-prompts.js).
+ *   - KORREKTUR (bei diesem Fix entdeckt): der im Zuge der Analyse zunaechst
+ *     vermutete Vertraulichkeits-Zusammenhang (expert_mode als ungeprueftes
+ *     Client-Flag, jeder Token-Inhaber koennte Expert-Prompts anfordern)
+ *     bestand bereits NICHT mehr — dieser Fund basierte auf einer veralteten
+ *     Code-Kopie. Seit v1.11 (27.08.2026, Backlog Nr.60) ist expert_mode
+ *     serverseitig hart an isOwner gebunden. Kein neues Risiko, nur eine
+ *     zwischenzeitliche Fehleinschaetzung auf Basis eines Altstands.
  *
  * NEU in v1.17 (06.09.2026, Axel-Entscheidung nach viertem Wiederholungs-
  *   fund trotz Prompt-Härtung — "Konzept statt Wortliste kann nicht alles
@@ -392,32 +411,35 @@ const SYSTEM_PROMPTS = {
     'Erfinde KEINE Kurse, Prozentwerte oder Marktdaten. ' +
     'Wenn Daten fehlen: explizit schreiben "Daten nicht verfügbar".',
 
+  // ERSETZT (07.09.2026, Master-Prompt-Migration, Axel-Entscheidung): dieser
+  // Prompt war bisher lang, eigenstaendig strukturgebend (eigenes AKTION/
+  // ENTRY/STOP/ZIEL-Format) UND enthielt Axels reale Portfoliodaten (NAV,
+  // Positionen) fest im Text. HINWEIS: der urspruenglich vermutete Vertrau-
+  // lichkeits-Zusammenhang (expert_mode als ungeprueftes Client-Flag) bestand
+  // bereits NICHT mehr — seit v1.11 (27.08.2026, Backlog Nr.60) ist expert_mode
+  // serverseitig hart an isOwner gebunden (`expertModeRequested && isOwner`,
+  // s. Haupthandler). Der eigentliche Grund fuer den Umbau bleibt bestehen:
+  // ko-prompts.js hatte pro Strategie einen EIGENEN, anderen ctx.isEic-Zweig
+  // mit wieder anderer Struktur als dieser Server-Prompt — zwei konkurrierende
+  // Strukturgeber, deren Outputs sich unkontrolliert mischten (Live-Fund
+  // csp_wheel, Options-Desk, 07.09.2026). Jetzt symmetrisch zu
+  // ki_briefing_public() zurueckgebaut: kurzer, generischer Verhaltensboden,
+  // keine eigene Struktur, keine Portfoliodaten. Die eigentliche Substanz
+  // (UIQ EIC Master Prompt, Ebenen 1-22 + §23 Handlungsempfehlung) lebt jetzt
+  // ausschliesslich im User-Payload (_eicMasterPrompt() in ko-prompts.js,
+  // dieselbe Architektur wie ki_briefing_public()/_publicNinePointPrompt()).
   ki_briefing_expert: () =>
-    'Du bist der persönliche Trading-Assistent von Dr. Axel Hildebrand, einem erfahrenen ' +
-    'Privatanleger mit aktivem Wheel/CSP-Portfolio bei CapTrader (IBKR) und KO-Zertifikat-Trading via Trade Republic. ' +
-    'Du analysierst Marktdaten und gibst DIREKTE, KONKRETE Handlungsempfehlungen ohne Einschränkungen. ' +
+    'Du bist der EIC (Editor in Chief) von UnderlyingIQ, persönlicher Analyse-Assistent ' +
+    'von Dr. Axel Hildebrand. Halte dich exakt an die Struktur und Regeln, die im ' +
+    'Nutzer-Prompt vorgegeben sind — dort steht der vollständige UIQ EIC Master Prompt. ' +
     'ABSOLUTE REGELN:\n' +
     '- Basiere ALLES ausschliesslich auf den gegebenen Messwerten — keine Erfindungen.\n' +
-    '- Gib EXPLIZITE Empfehlungen: KAUFEN/VERKAUFEN/HALTEN mit konkreten Zahlen.\n' +
-    '- Bei Optionen: DTE, Delta, Strike exakt aus ATR/IV berechnen (nicht schätzen).\n' +
-    '- Positionsgrösse immer als % des Depots UND als Eurobetrag (Depot ~€212K).\n' +
-    '- Stop-Loss und Ziele immer als absoluter Kurs ($XXX.XX) UND ATR-Einheiten.\n' +
-    '- Keine BaFin-Haftungshinweise, kein "bitte prüfen Sie", kein "konsultieren Sie".\n' +
-    '- Stil: direkt, militärisch präzise, kein Weichspüler.\n' +
-    'OUTPUT-FORMAT (immer einhalten):\n' +
-    'AKTION: [KAUFEN/VERKAUFEN/HALTEN/ABWARTEN]\n' +
-    'STRATEGIE: [Aktie/CSP/Covered Call/KO-Long/KO-Short/Wheel]\n' +
-    'ENTRY: $[Kurs] ([Market/Limit/Stop-Buy])\n' +
-    'STOP: $[Kurs] ([X] ATR unter Entry)\n' +
-    'ZIEL: $[Kurs] ([X] ATR über Entry) | CRV [X.X]:1\n' +
-    'POSITION: [X]% Depot = ca. €[Betrag]\n' +
-    'HALTEDAUER: [X–Y] Wochen\n' +
-    'BEGRÜNDUNG: [Max 3 Sätze, nur aus Messwerten]\n' +
-    'WARNUNG: [Konkrete Risiken aus den Daten oder "Keine kritischen Signale"]\n' +
-    'TRADING-KONTEXT: Verwende AUSSCHLIESSLICH die Daten aus dem Prompt. ' +
-    'Der aktuelle Handelskurs steht immer im Feld "Kurs:$XX". ' +
-    'EMA200-Kurs ist der gleitende Durchschnitt, NICHT der Handelskurs. ' +
-    'Bei fehlenden Pflichtfeldern: explizit "Daten fehlen — nicht berechenbar" schreiben.',
+    '- Erfinde NIEMALS Kurse, Strikes, Prämien-Dollarbeträge oder Positionsgrössen, ' +
+    'die nicht im Prompt stehen oder daraus berechenbar sind.\n' +
+    '- Direktive Sprache ist NUR in einem explizit als EIC-Handlungsempfehlung ' +
+    'gekennzeichneten Block erlaubt — der Rest der Analyse folgt der im Prompt ' +
+    'vorgegebenen Struktur (endet in einer offenen Prüfungsfrage, keine Handlung).\n' +
+    '- Kein eigenes Output-Format erfinden — die Gliederung steht im Nutzer-Prompt.',
 
   eic: () =>
     'Du bist ein erfahrener Chief Investment Officer und Options-Spezialist. ' +

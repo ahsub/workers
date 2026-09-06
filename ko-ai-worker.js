@@ -1,7 +1,212 @@
 /**
  * ko-ai.ahildebrand.workers.dev
  * ══════════════════════════════════════════════════════════════════
- * UnderlyingIQ — KI-Proxy Worker v1.8
+ * UnderlyingIQ — KI-Proxy Worker v1.17
+ *
+ * NEU in v1.17 (06.09.2026, Axel-Entscheidung nach viertem Wiederholungs-
+ *   fund trotz Prompt-Härtung — "Konzept statt Wortliste kann nicht alles
+ *   lösen, das muessen wir serverseitig loesen"):
+ *   - COMPLIANCE_PATTERNS um vier neue Einträge ergänzt (Zeitreihen-/
+ *     Dauerhaftigkeits-Zuschreibung aus Snapshot-Werten, s. ko-prompts.js
+ *     REASONING-GUARDRAILS Punkt e): "stabil"/"stabilisiert"/"Stabilität"/
+ *     "Stabilisierung", "Trendfestigkeit"/"festigt", "vorhersehbar"/
+ *     "vorhersagbar"/"berechenbar", "verankert"/"gefestigt". Bewusst NICHT
+ *     aufgenommen: "nachhaltig" — legitimer, hochfrequenter Gebrauch bei
+ *     dividend/value ("nachhaltige Ausschüttung" ist die im Strategie-
+ *     prinzip selbst geforderte Formulierung), würde das Signal-Rausch-
+ *     Verhältnis des Logs zerstören.
+ *   - NEUE, eigenständige Funktion scanForTickerScopeViolations() (plus
+ *     Helper extractTickerCandidates()): strukturelle Prüfung, ob in
+ *     Abschnitt 4-9 des 9-Punkte-Schemas ein Ticker genannt wird, der
+ *     nicht bereits in Abschnitt 3 eingeführt wurde (REASONING-GUARDRAILS
+ *     Punkt f, "Ticker-Scope-Sperre") — VIERFACH belegter Wiederholungs-
+ *     fund trotz vier Prompt-Verteidigungsschichten (BA/HII/LHX 05.09.,
+ *     PPRUY 05.09., BE 06.09. Swing-Retest, BMY 06.09. dividend-Erstest).
+ *     Heuristischer Großbuchstaben-Ticker-Scan mit Stoppliste bekannter
+ *     Nicht-Ticker-Akronyme; Abschnitts-Überschriftenzeilen werden vor der
+ *     Extraktion entfernt (sonst Fehlalarme wie "TRADE"/"OFF"/"UND" aus
+ *     Überschriften wie "STRATEGISCHER TRADE-OFF" — beim isolierten
+ *     Funktionstest selbst entdeckt und gefixt, bevor Deployment). Beide
+ *     neuen Scans laufen wie der bestehende Compliance-Scan rein loggend
+ *     (nicht blockierend) und fliessen in dasselbe complianceFlags-Feld
+ *     im bestehenden /logs-Endpunkt — keine neue Infrastruktur nötig.
+ *   - Kontext: dies ist die serverseitige "zweite Verteidigungslinie" für
+ *     genau die zwei Fundtypen, bei denen mehrfache Prompt-Härtung
+ *     (ko-prompts.js, 04.-06.09.2026) an eine Grenze stiess — Axel-
+ *     Entscheidung, keine weitere Prompt-Iteration mehr zu versuchen.
+ *
+ * NEU in v1.16 (31.08.2026, Compliance-Scanner-Regex-Lücke geschlossen —
+ *   Priorität 1 aus Übergabeprotokoll 30.08. §8, zwei unabhängige
+ *   Live-Belege am selben Tag):
+ *   - Pattern 'strukturell unnötig' verlangte zwingend "strukturell" direkt
+ *     vor "unnötig"/"nicht erforderlich" — beide Live-Belege vom 30.08.
+ *     enthielten dieses Präfix NICHT: 1. Beleg "klassifiziert Collar-Setups
+ *     als 'nicht nötig'" (andere Wortform: "nicht nötig" statt "unnötig"),
+ *     2. Beleg "als Regime-Signal 'nicht erforderlich' bewertet" (ohne
+ *     "strukturell" davor). Beide liefen am Compliance-Scanner vorbei.
+ *   - Fix: Pflicht-Präfix entfernt, Pattern auf reine Wortgrenzen-Suche
+ *     nach "unnötig" / "nicht nötig" / "nicht erforderlich" verengt, ohne
+ *     geforderten Vorgänger-Kontext. Gegen den Prompt-Text selbst geprüft
+ *     (ko-prompts.js v2.17.0): keine legitime Verwendung dieser Begriffe
+ *     vorhanden, die jetzt fälschlich anschlagen würde — Scan bleibt
+ *     zudem rein loggend (nicht blockierend), Fehlalarm-Risiko gering.
+ *
+ * NACHTRAG 2 (01.09.2026, Axel + Claude, isOwner-Verdacht im
+ *   Haupthandler ausgeräumt):
+ *   Nach der zweiten OWNER_TOKEN-Rotation trat ein einzelner
+ *   "KI-Token ungültig"-Fehlschlag auf, obwohl der Wert nachweislich
+ *   identisch (Passwort-Safe, an beiden Stellen — ko-ai UND ko-sync —
+ *   neu gesetzt, redeployed) im Frontend eingetragen war. Verdacht:
+ *   unsichtbares Zeichen in einer der beiden Quellen. Ein temporärer
+ *   Debug-Log direkt nach der isOwner-Zuweisung im Haupt-POST-Handler
+ *   (nur Längen+Boolean, kein Klartext) zeigte beim nächsten
+ *   erfolgreichen Aufruf: token.length=64, owner.length=64 (identisch),
+ *   isOwner=true, matchesStatic=false — kein Zeichenfehler, isOwner
+ *   griff korrekt. Der einzelne Fehlschlag war mit hoher
+ *   Wahrscheinlichkeit eine kurze Cloudflare-Edge-Propagations-
+ *   verzögerung nach dem Redeploy (gleiches Muster wie der
+ *   STATIC_TOKEN-Edge-Delay im 31.08.-Protokoll §3), kein struktureller
+ *   Bug. Debug-Log nach Bestätigung wieder entfernt.
+ *
+ * NACHTRAG 1 (01.09.2026, Axel + Claude, OWNER_TOKEN-Diagnose /logs-Endpunkt):
+ *   Nach dem Neusetzen von OWNER_TOKEN/STATIC_TOKEN (verschiedene Werte)
+ *   wurde die isOwner-Verzweigung live verifiziert: ein ki_briefing-
+ *   Live-Aufruf über das Frontend erschien anschließend NICHT in
+ *   /logs?rl=1 (rateLimitsToday leer) — checkRateLimit() wird für
+ *   isOwner=true also korrekt übersprungen, der Bearer-Token-Vergleich
+ *   gegen env.OWNER_TOKEN funktioniert wie in v1.7 vorgesehen. Der
+ *   ursprüngliche "Unauthorized" bei /logs?token=... war kein isOwner-Bug,
+ *   sondern schlicht der falsche Token für diesen Endpoint (/logs prüft
+ *   separat und ausschließlich gegen env.STATIC_TOKEN als Query-Parameter
+ *   ?token=, nicht gegen OWNER_TOKEN) plus ein Copy-Paste-Rest beim
+ *   ersten Versuch. Ein dafür kurzzeitig eingefügter Debug-Log (nur
+ *   Längen+Boolean, kein Klartext-Token) ist nach Abschluss der Diagnose
+ *   wieder entfernt. Bei diesem Test zusätzlich entdeckt (separat zu
+ *   behandeln): der ki_briefing-Output enthielt echte Compliance-Treffer
+ *   ("Prämienerwartung", "optimal") trotz Wortverbot in
+ *   PUBLIC_REGULATORY_GUARDRAIL — noch nicht weiter untersucht.
+ *
+ * NEU in v1.15 (30.08.2026, Diagnose-Instrumentierung — Axel-Meldung
+ *   "Morning Briefing dauert seit einigen Tagen ~10min statt <3min"):
+ *   - callAnthropic() misst jetzt Start-/Endzeit um den fetch()-Call und
+ *     loggt Modell, max_tokens und Dauer in ms via console.log (sichtbar
+ *     in `wrangler tail`/CF-Dashboard). Reiner Diagnose-Zusatz, KEINE
+ *     Verhaltensänderung, kein Einfluss auf Response/Fehlerpfad.
+ *   - Zweck: unterscheiden, ob die Verlangsamung im Anthropic-Call selbst
+ *     liegt oder in der vorgelagerten Datensammlung (ctx.marktkontext,
+ *     CBOE-Abrufe) — dafür bislang keinerlei Zeitmessung vorhanden.
+ *   - Bewusst als eigener, von der heutigen Coaching-Standard-Änderung
+ *     unabhängiger Versionssprung behandelt (Diagnose-Fix, kein Feature).
+ *
+ * NEU in v1.14 (29.08.2026, Collar-Live-Test, letzter Fund des Tages):
+ *   - 3 neue COMPLIANCE_PATTERNS: HVP-Richtungsfehler ("Volatilitaets-
+ *     kompression" bei tatsaechlich HOHER Volatilitaet — Bedeutungsumkehr,
+ *     erschien konsistent in mehreren Strategien heute, obwohl nirgends im
+ *     Prompt-Text vorgegeben); "strukturell unnoetig" (Regime-Einschaetzung
+ *     die wie eine Handlungsfreigabe klingt); "praemieneffizient" (weitere
+ *     Variante der oekonomischen Tatsachenbehauptung ohne Live-Optionskette).
+ *     Bekannte Einschraenkung: der HVP-Kompressions-Filter ist textbasiert
+ *     und kann nicht pruefen, ob der HVP-Wert im konkreten Satz tatsaechlich
+ *     hoch war — bei legitimer Verwendung des Konzepts "Volatility
+ *     Contraction" (z.B. VCP-Strategie, echte Kursbereich-Kontraktion, ein
+ *     anderes Konzept als HVP) waere ein Fehlalarm moeglich. Da der Scan
+ *     rein loggend (nicht blockierend) ist, ist das Risiko gering.
+ *
+ * NEU in v1.13 (29.08.2026, CC-Live-Test, Trade-off-Prinzip):
+ *   - 3 neue COMPLIANCE_PATTERNS ergaenzt (guenstiges Praemien-/Volatilitaets-
+ *     Umfeld als oekonomische Tatsachenbehauptung; "reduziert die Gefahr/das
+ *     Risiko" als Marktprognose-Framing; "Modell favorisiert/bevorzugt
+ *     [aggressiv/konservativ/...]" als indirekte Options-Parameter-
+ *     Entscheidung). Bewusst NICHT als blanker "Modell bevorzugt"-Filter,
+ *     da diese Phrase auf Aggregatebene (Titel-Ranking) weiterhin zulaessig
+ *     und sogar Pflichtformulierung ist — nur die Parameter-Kombination
+ *     (aggressiv/konservativ/höher/nieder direkt danach) wird geflaggt.
+ *
+ * NEU in v1.12 (29.08.2026, Spec-Belastungstest — CSP/Wheel-Live-Test):
+ *   - Deterministischer Compliance-Scan nach der KI-Antwort, vor Auslieferung
+ *     (scanForComplianceViolations()). Auslöser: "attraktiv" und
+ *     "Prämienerwartung" waren beide bereits wortwörtlich in
+ *     PUBLIC_REGULATORY_GUARDRAIL (ko-prompts.js) verboten und erschienen
+ *     trotzdem im Output — Beweis, dass Prompt-Instruktionen allein keine
+ *     100%ige Zuverlässigkeit haben. Diese Ebene haengt nicht von
+ *     Prompt-Befolgung ab, sondern erkennt bekannte Verstöße mechanisch.
+ *   - Bewusst NICHT blockierend (kein Retry, keine Zensur) — nur Logging via
+ *     bestehendem logRequest()-Mechanismus (neues optionales Feld
+ *     `complianceFlags`), abrufbar über /logs?flagged=1. Begründung:
+ *     Blockieren ohne Fallback-Plan (Retry? Fehlermeldung an Nutzer?) wäre
+ *     ein neues Risiko in einem aktiv genutzten Produkt — erst Daten
+ *     sammeln, wie oft/wo das wirklich auftritt, dann über härtere
+ *     Maßnahmen entscheiden.
+ *   - Nur für Public-Mode-Antworten aktiv (expert_mode ist bewusst
+ *     unverändert direktiv, s. SUITE.md №65/№66).
+ *
+ * NEU in v1.11 (27.08.2026, Legal-Briefing-Audit — Backlog №60 in SUITE.md v4.19):
+ *   - SICHERHEITS-FIX: expert_mode ist jetzt serverseitig hart an isOwner
+ *     gebunden (`expertModeRequested && isOwner`), statt das Client-Flag
+ *     ungeprüft zu übernehmen. Hintergrund: STATIC_TOKEN wird von allen
+ *     Beta-Testern geteilt, das clientseitige EIC-PIN-Gate (localStorage,
+ *     axel-scanner/index.html) ist selbstgesetzt und bot keine echte
+ *     Identitätsprüfung — jeder Beta-Tester konnte sich damit theoretisch
+ *     selbst freischalten und Axels reale Portfoliodaten (NAV ~€212K,
+ *     Live-Positionen) aus den Expert-Prompts (eic, ki_briefing_expert,
+ *     deep_dive_expert, morning_expert) einsehen. Da der Token selbst
+ *     keine Einzelnutzer unterscheidet, ist OWNER_TOKEN das einzig
+ *     verfügbare Unterscheidungsmerkmal (Axel persönlich vs. alle
+ *     STATIC_TOKEN-Nutzer). Deutlich kleiner als die für Phase-2 vorgesehene
+ *     volle JWT-Migration (s. Auth-Abschnitt unten) — reine Absicherung
+ *     der bestehenden Mechanik, kein neues Auth-System. Verworfene
+ *     Alternative: Token-Hash-Allowlist — funktioniert nicht, weil
+ *     STATIC_TOKEN für alle Nutzer identisch ist und daher keinen
+ *     Einzelnutzer-Hash liefert. Abgelehnte Anfragen werden als
+ *     `<action>_EXPERT_DENIED` geloggt (Audit-Spur, kein Fehler an den
+ *     Client — fällt still auf den Public-Prompt zurück).
+ *   - ZUSATZFUND beim Umsetzen: die 'eic'-Action hatte gar keinen Public/
+ *     Expert-Split (immer voller Investment-Case, unabhängig von
+ *     expert_mode) und war über die API weiterhin erreichbar, obwohl im
+ *     aktuellen Frontend kein Call-Site mehr existiert. Jetzt zusätzlich
+ *     hart auf isOwner gesperrt (403 für Nicht-Owner).
+ *
+ * NEU in v1.10 (21.08.2026):
+ *   - morning: 3000 → 4500. Live-Beweis (Axel, 21.08.2026, 08:12 Uhr
+ *     Briefing): Ausgabe brach hart mitten im Wort ab ("bei bestehenden
+ *     Long-Positionen s...") — klassische max_tokens-Abbruchsignatur,
+ *     kein Frontend-Anzeigefehler. Die v1.9-Annahme, morning sei nach
+ *     der 05.08-Erhöhung (2000->3000) nicht mehr betroffen, war FALSCH:
+ *     der Prompt ist seither mehrfach gewachsen (Pflicht-Sentiment-
+ *     Auswertung + 10-zeilige Strategie-Ampel-Tabelle mit Begruendung
+ *     pro Zeile, s. v1.4/v1.5), ohne dass das Token-Budget je gegen die
+ *     aktuelle Prompt-Laenge nachgetestet wurde.
+ *   - Lehre aus drei Fehlschaetzungen in Folge (deep_dive am 05.08.,
+ *     eic und ki_briefing/dark_pool in v1.9, jetzt morning): kuenftig
+ *     grosszuegige Sicherheitsmarge statt knapper Nachjustierung, um
+ *     wiederholtes Nachbessern kurz vor Praesentationen zu vermeiden.
+ *
+ * NEU in v1.9 (21.08.2026):
+ *   - max_tokens-Erhöhung gegen wiederkehrende Truncation-Beschwerden
+ *     (Axel-Anfrage 21.08.2026, "Handlungsempfehlungen brechen häufig
+ *     unvermittelt ab"):
+ *       ki_briefing: 2048 → 3000  (Output-Format verlangt 9 Pflichtfelder
+ *         AKTION/STRATEGIE/ENTRY/STOP/ZIEL/POSITION/HALTEDAUER/BEGRÜNDUNG/
+ *         WARNUNG — 2048 war seit Einführung nie erhöht worden, obwohl
+ *         morning/deep_dive/eic am 05.08.2026 bereits angepasst wurden.)
+ *       eic: 2000 → 3500  (umfangreichster Prompt im System — 7 Pflicht-
+ *         Abschnitte inkl. vollstaendiger Options-Parameter-Tabelle; die
+ *         05.08-Erhöhung von 1200→2000 reichte laut Axel weiterhin nicht.)
+ *       dark_pool: 400 → 1000  (bislang nie erhöht — bei ~300 Wörtern
+ *         Kapazität plausibler Kandidat für Abbrüche, erst heute als
+ *         betroffen gemeldet.)
+ *     morning (3000) und deep_dive (2500) zunaechst unveraendert gelassen,
+ *     da nicht explizit als weiterhin betroffen gemeldet — dieser Grundsatz
+ *     wurde in v1.10 fuer morning revidiert, s.o. (Live-Beweis).
+ *   - Root-Cause-Kontext (Nachtrag zur 05.08-Änderung): Die damalige
+ *     Session hatte behauptet, diese Datei sei bereits als workers/
+ *     ko-ai.js ins Repo ahsub/ko-aggregator versioniert worden — das war
+ *     NICHT der Fall (verifiziert 21.08.2026: kein einziger Commit
+ *     erwähnt ko-ai.js, workers/ enthaelt nur ko-watchdog/). Die Live-
+ *     Werte im CF-Dashboard waren zwar seit 05.08. korrekt aktiv (Axel
+ *     hatte sie direkt im Dashboard gesetzt), aber der SPOF aus
+ *     STRATEGIE.md ("ko-ai-Worker-Quellcode nicht versioniert") blieb
+ *     bestehen. Mit diesem Commit erstmals tatsaechlich behoben.
  *
  * NEU in v1.8 (08.07.2026):
  *   - Datum-Grounding (Anti-Halluzination): Serverseitig wird das heutige
@@ -133,8 +338,6 @@ const KV_KNOWN_UNIVERSE   = 'known_universe_tickers';    // Array, vom Aggregato
 const MAX_PENDING_ENTRIES = 200;                          // Cap gegen Spam/Bloat
 
 // ── RATE-LIMIT-KONFIGURATION (v1.6) ───────────────────────────────────────────
-// Limits PRO TAG je Subjekt (Phase 1: hash(Token|IP) ≈ pro Nutzer).
-// Keys = Action-Namen aus ACTION_CONFIG. Nicht gelistete Actions → default.
 const RATE_LIMITS = {
   deep_dive:     5,
   morning:       20,  // TEMP hochgesetzt (10.07.2026) für aktive Phase-0.5-Testphase
@@ -147,23 +350,20 @@ const RATE_LIMITS = {
   default:      10,   // makro, oversold und alles Übrige zusammen
 };
 
-// Ausnahmen: 16-Hex-Subjekt-Hashes, die NICHT limitiert werden (z. B. eigener
-// Betreiber-Zugang). Eigenen Hash ermitteln: einmal normal nutzen, dann
-// GET /logs?token=ADMIN&rl=1 → subjectHash der eigenen Einträge hier eintragen.
 const RATE_LIMIT_EXEMPT_HASHES = [
   // 'a1b2c3d4e5f60718',
 ];
 
 // ── CORS-Konfiguration ────────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
-  'https://ahsub.github.io',          // GitHub Pages (aktuell)
-  'https://underlyingiq.com',          // Production
-  'https://www.underlyingiq.com',      // Production www
-  'https://underlyingiq-app.pages.dev', // Cloudflare Pages (deployment)
-  'https://app.underlyingiq.com',      // SaaS App subdomain
+  'https://ahsub.github.io',
+  'https://underlyingiq.com',
+  'https://www.underlyingiq.com',
+  'https://underlyingiq-app.pages.dev',
+  'https://app.underlyingiq.com',
   'http://localhost:3000',
   'http://localhost:8080',
-  'http://127.0.0.1:5500',            // Live Server VS Code
+  'http://127.0.0.1:5500',
 ];
 
 function corsHeaders(origin) {
@@ -377,11 +577,6 @@ async function hashToken(token) {
 }
 
 // ── RATE-LIMITING (v1.6) ──────────────────────────────────────────────────────
-/**
- * Prüft und inkrementiert den Tageszähler für subjectHash × action.
- * Fail-open: KV-Störung darf KI-Funktionen nicht lahmlegen (Beta-Politik).
- * @returns {Promise<{allowed: boolean, used: number, limit: number}>}
- */
 async function checkRateLimit(env, subjectHash, action) {
   const limit = RATE_LIMITS[action] ?? RATE_LIMITS.default;
 
@@ -398,7 +593,6 @@ async function checkRateLimit(env, subjectHash, action) {
     if (used >= limit) {
       return { allowed: false, used, limit };
     }
-    // 26h-TTL: Schlüssel räumt sich selbst weg, übersteht Mitternachts-Grenzfälle
     await env.AUTH_KV.put(key, String(used + 1), { expirationTtl: 60 * 60 * 26 });
     return { allowed: true, used: used + 1, limit };
   } catch (e) {
@@ -407,7 +601,6 @@ async function checkRateLimit(env, subjectHash, action) {
   }
 }
 
-/** Heutige Zählerstände für den /logs-Admin-Endpoint (?rl=1). */
 async function rateLimitReport(env) {
   if (!env.AUTH_KV) return [];
   const prefix = `rl:${new Date().toISOString().slice(0, 10)}:`;
@@ -418,7 +611,7 @@ async function rateLimitReport(env) {
       const page = await env.AUTH_KV.list({ prefix, cursor });
       for (const k of page.keys) {
         const used = await env.AUTH_KV.get(k.name);
-        const parts = k.name.split(':'); // [rl, YYYY-MM-DD, subjectHash, action]
+        const parts = k.name.split(':');
         out.push({ subjectHash: parts[2], action: parts[3], used: Number(used) });
       }
       cursor = page.list_complete ? undefined : page.cursor;
@@ -430,8 +623,8 @@ async function rateLimitReport(env) {
 }
 
 // ── REQUEST LOGGER ────────────────────────────────────────────────────────────
-async function logRequest(env, token, action, origin, cfRay, success) {
-  if (!env.AUTH_KV) return;  // Kein KV gebunden → skip
+async function logRequest(env, token, action, origin, cfRay, success, complianceFlags) {
+  if (!env.AUTH_KV) return;
   try {
     const tokenHash  = await hashToken(token);
     const timestamp  = new Date().toISOString();
@@ -443,13 +636,147 @@ async function logRequest(env, token, action, origin, cfRay, success) {
       cfRay:    cfRay  || 'unknown',
       success,
       timestamp,
+      // NEU (29.08.2026, Spec-Belastungstest CSP/Wheel-Live-Test): nur
+      // gesetzt, wenn der Compliance-Scan (s. scanForComplianceViolations())
+      // in einer Public-Mode-Antwort mindestens einen bekannten Verstoss
+      // gefunden hat. Absichtlich NICHT blockierend — dient der Sichtbarkeit
+      // (wie oft/wo treten Verstoesse trotz Guardrail auf), nicht der
+      // automatischen Zensur. Ueber den bestehenden /logs-Endpoint abrufbar.
+      ...(complianceFlags && complianceFlags.length ? { complianceFlags } : {}),
     });
-    // 90 Tage aufbewahren
     await env.AUTH_KV.put(logKey, logEntry, { expirationTtl: 60 * 60 * 24 * 90 });
   } catch(e) {
-    // Logging-Fehler dürfen den API-Call nicht blockieren
     console.error('[LOG] KV write failed:', e.message, '| AUTH_KV bound:', !!env.AUTH_KV);
   }
+}
+
+// ── COMPLIANCE-SCAN (v1.12, 29.08.2026) ─────────────────────────────────────
+// Deterministischer Nachpruef-Schritt gegen UIQ-REGULATORY-LANGUAGE-SPEC.md.
+// Entstanden nach dem CSP/Wheel-Live-Test: "attraktiv" und "Praemienerwartung"
+// waren beide bereits WORTWOERTLICH in PUBLIC_REGULATORY_GUARDRAIL
+// (ko-prompts.js) verboten und erschienen trotzdem im Output — Beweis, dass
+// Prompt-Instruktionen allein keine 100%ige Zuverlaessigkeit haben, auch bei
+// exakten Wortverboten. Diese Liste ist bewusst NICHT identisch mit der
+// Guardrail-Wortliste: sie enthaelt nur Begriffe mit niedrigem
+// Fehlalarm-Risiko (z.B. "Empfehlung" fehlt hier bewusst, weil das Modell es
+// legitim in einer Verneinung wie "keine Empfehlung" verwenden darf/soll —
+// ein reiner String-Match wuerde das faelschlich flaggen). Nur fuer
+// Public-Mode-Antworten relevant (expert_mode-Antworten sind bewusst
+// direktiv, s. SUITE.md №65/№66).
+const COMPLIANCE_PATTERNS = [
+  { label: 'attraktiv',            re: /\battraktiv\w*/i },
+  { label: 'strukturell günstig',  re: /strukturell\s+(günstig|attraktiv)/i },
+  { label: 'Prämienerwartung',     re: /Prämienerwartung/i },
+  { label: 'optimal',              re: /\boptimal(?:e|er|es|en|erweise)?\b/i },
+  { label: 'Fokus auf',            re: /\bFokus\s+auf\b/i },
+  { label: 'priorisier',           re: /priorisier/i },
+  { label: 'solltest du',          re: /solltest\s+du/i },
+  { label: 'jetzt handeln',        re: /jetzt\s+handeln/i },
+  { label: 'Trade eröffnen',       re: /Trade\s+eröffnen/i },
+  { label: 'Top-Kandidat',         re: /Top-Kandidat/i },
+  { label: 'Exit-Schwelle/-Fenster', re: /Exit-(Schwelle|Fenster)/i },
+  { label: 'Stop unterhalb/oberhalb', re: /Stop\s+(unterhalb|oberhalb)/i },
+  { label: 'ist für dich nicht geeignet', re: /ist\s+für\s+dich\s+nicht\s+geeignet/i },
+  { label: 'günstiges Prämien-/Volatilitäts-Umfeld', re: /günstiges?\s+(Prämien|Volatilitäts)-?Umfeld/i },
+  { label: 'reduziert die Gefahr/das Risiko', re: /reduziert\s+(modellseitig\s+)?(die\s+Gefahr|das\s+Risiko)/i },
+  { label: 'Modell favorisiert/bevorzugt [Parameter] (Regex verbreitert 03.09.2026 — alte Fassung verlangte "die/den/eine" + Adjektiv direkt danach, ließ "Modell bevorzugt trotzdem die Kombination aus..." durch)', re: /Modell\s+(favorisiert|bevorzugt)/i },
+  { label: 'HVP-Richtungsfehler (Kompression bei hohem HVP)', re: /(Volatilitäts-?kompression|Volatilitäts-?komprimierung|komprimierte\s+Vol)/i },
+  { label: 'unnötig/nicht erforderlich (Regex-Lücke geschlossen 31.08.2026 — zwei unabhängige Live-Belege 30.08.: "nicht nötig" und "nicht erforderlich" OHNE "strukturell" davor, Pflicht-Präfix griff nicht)', re: /\b(unnötig|nicht\s+n(ö|oe)tig|nicht\s+erforderlich)\b/i },
+  { label: 'prämieneffiziente Struktur', re: /prämieneffizient/i },
+  { label: 'maximiert/optimiert (Verbform, Zielkonflikt-Superlativ)', re: /\b(maximiert|optimiert)\b/i },
+  { label: 'Andienungs-/Ausübungswahrscheinlichkeit', re: /(Andienungs|Ausübungs)wahrscheinlichkeit/i },
+  { label: 'keine strukturellen Hemmnisse', re: /keine\s+strukturellen\s+Hemmnisse/i },
+  { label: 'ATM-orientiert (Strategy-Fit-Moneyness-Verwechslung, ggf. False-Positive bei atmna selbst)', re: /ATM-orientiert/i },
+  { label: 'verdichtet(e) Volatilität (Synonym-Umgehung von komprimiert)', re: /verdichtete?\s+Volatilit/i },
+  { label: 'nicht strukturell gehemmt (Synonym-Umgehung von Hemmnisse)', re: /nicht\s+strukturell\s+gehemmt/i },
+  { label: 'Strike-Annäherung/Strike-Niveau aus Underlying-Signal (Regex präzisiert 03.09.2026 — flaggt nur die kausale Verknüpfung, nicht den erwünschten "...kann UIQ ohne Optionskettendaten nicht beurteilen"-Vorbehalt im selben Satz)', re: /Strike-(Ann(ä|ae)herung|Niveau)(?![^.]{0,100}beurteilen)/i },
+  // ── NEU (06.09.2026, Axel-Entscheidung — "Konzept statt Wortliste"-Prinzip
+  // aus ko-prompts.js/REASONING-GUARDRAILS e, hier als Wortliste umgesetzt,
+  // weil ein reiner Regex-Scan kein "Bezieht sich das auf einen Snapshot-
+  // Wert?"-Konzept prüfen kann — nur die bekannten, mehrfach belegten
+  // Wortformen. Vierfach belegter Wiederholungsfund trotz Prompt-Härtung:
+  // "stabil"/"stabilisiert" (cc/collar-Live-Tests, 04.-05.09.2026).
+  { label: 'stabil/stabilisiert (Zeitreihen-/Dauerhaftigkeits-Zuschreibung aus Snapshot-Wert, s. ko-prompts.js REASONING-GUARDRAILS e)', re: /\bstabil(e|er|es)?\b|\bstabilisiert(e)?\b|\bStabilisierung\b|\bStabilität\b/i },
+  { label: 'Trendfestigkeit/festigt', re: /Trendfestigkeit|\bfestigt\b/i },
+  { label: 'vorhersehbar/vorhersagbar/berechenbar', re: /vorhersehbar\w*|vorhersagbar\w*|\bberechenbar\w*/i },
+  { label: 'verankert/gefestigt (Zeitreihen-Kontext)', re: /\bverankert(e|er|es)?\b|\bgefestigt(e|er|es)?\b/i },
+  // BEWUSST NICHT AUFGENOMMEN: "nachhaltig" — hat einen legitimen, hoch-
+  // frequenten Gebrauch bei dividend/value ("nachhaltige Ausschüttung" ist
+  // die im Strategieprinzip selbst geforderte, korrekte Formulierung) —
+  // würde nahezu jede dividend-Antwort fälschlich flaggen und das Signal-
+  // Rausch-Verhältnis des Logs zerstören. Bei Verdacht auf Fehlgebrauch
+  // (z.B. "nachhaltiger Trend" statt "nachhaltige Ausschüttung") nur
+  // manuell im Einzelfall prüfen, nicht automatisiert scannen.
+];
+
+function scanForComplianceViolations(text) {
+  if (!text) return [];
+  const hits = [];
+  for (const p of COMPLIANCE_PATTERNS) {
+    if (p.re.test(text)) hits.push(p.label);
+  }
+  return hits;
+}
+
+// ── TICKER-SCOPE-SCAN (v1.13, 06.09.2026) ───────────────────────────────────
+// Ergänzt scanForComplianceViolations() um eine STRUKTURELLE Prüfung, die
+// sich nicht als einfacher Text-Regex ausdrücken lässt: wird in Abschnitt
+// 4-9 des 9-Punkte-Schemas ein Ticker genannt, der nicht bereits in
+// Abschnitt 3 eingeführt wurde? (ko-prompts.js REASONING-GUARDRAILS Punkt f,
+// "Ticker-Scope-Sperre"). VIERFACH belegter Wiederholungsfund trotz vier
+// Prompt-Verteidigungsschichten (BA/HII/LHX 05.09., PPRUY 05.09., BE
+// 06.09. Swing-Retest, BMY 06.09. dividend-Erstest) — Axel-Entscheidung:
+// keine weitere Prompt-Härtung, stattdessen serverseitige Sichtbarkeit.
+// HEURISTIK, KEIN GARANTIERT VOLLSTÄNDIGER PARSER: Ticker werden über ein
+// einfaches Großbuchstaben-Muster (1-5 Buchstaben, optional .XX-Suffix wie
+// GLEN.L) erkannt und gegen eine Stoppliste bekannter Nicht-Ticker-Akronyme
+// abgeglichen. Kann sowohl echte Ticker übersehen (False Negative, z.B.
+// wenn ein Akronym zufällig mit einem echten Ticker kollidiert) als auch
+// seltene Nicht-Ticker-Großschreibungen fälschlich als Ticker werten (False
+// Positive). Dient der Sichtbarkeit/dem Review über den /logs-Endpoint,
+// NICHT der automatischen Korrektur — genau wie scanForComplianceViolations().
+const TICKER_SCOPE_STOPWORDS = new Set([
+  'RSI','MACD','OBV','SEPA','EMA','ATR','HVP','CSP','KO','UIQ','VIX','QQQ',
+  'BULL','BEAR','FLAT','SIDE','ADR','ROE','ROI','ROIC','FCF','PE','PB',
+  'DTE','ITM','OTM','WPHG','GAAP','VCP','MA','MA50','MA200','EMA50','EMA200',
+  'IBD','AI','USD','EUR','GBP','CHF','US','EU','DE','TOP','BBPOS','RS',
+  'MSE','TNX','HY','ETF','SKEW','VVIX','GEX','DIX','PCR','OI','FLAT_STOP',
+]);
+
+function extractTickerCandidates(str) {
+  if (!str) return new Set();
+  const matches = str.match(/\b[A-Z]{1,5}(\.[A-Z]{1,3})?\b/g) || [];
+  return new Set(matches.filter(function(t) {
+    const base = t.split('.')[0];
+    return base.length >= 2 && !TICKER_SCOPE_STOPWORDS.has(base);
+  }));
+}
+
+function scanForTickerScopeViolations(text) {
+  if (!text) return [];
+  // Abschnitt 3 (Kandidatenliste) extrahieren — von "3." bis zum
+  // nächsten "4." am Zeilenanfang. Kein Treffer = kein erkennbares
+  // 9-Punkte-Format, Scan wird übersprungen statt falsch positiv zu warnen.
+  const sec3Match = text.match(/(?:^|\n)\s*3\.[^\n]*\n([\s\S]*?)(?=\n\s*4\.)/);
+  if (!sec3Match) return [];
+  const allowedTickers = extractTickerCandidates(sec3Match[1]);
+  // Abschnitte 4 bis Ende (9 + Fusszeile eingeschlossen — Fusszeile enthält
+  // typischerweise keine Ticker, daher unschädlich, sie mit einzuschliessen)
+  const sec49Match = text.match(/(?:^|\n)\s*4\.[^\n]*\n([\s\S]*)/);
+  if (!sec49Match) return [];
+  // WICHTIG: alle weiteren Abschnitts-Überschriften (5. GEGENARGUMENTE...,
+  // 6. STRATEGISCHER TRADE-OFF, ...) sind selbst grossgeschrieben und
+  // erzeugten sonst Fehlalarme ("TRADE", "OFF", "UND" als Pseudo-Ticker,
+  // belegter Fund beim isolierten Funktionstest 06.09.2026) — Überschriften-
+  // zeilen (Ziffer+Punkt am Zeilenanfang, Rest der Zeile) vor der Ticker-
+  // Extraktion entfernen, nur den Fliesstext scannen.
+  const bodyOnly = sec49Match[1].replace(/^\s*[4-9]\.\s+[^\n]*$/gm, '');
+  const usedTickers = extractTickerCandidates(bodyOnly);
+  const violations = [];
+  usedTickers.forEach(function(t) {
+    if (!allowedTickers.has(t)) violations.push('TICKER-SCOPE:' + t);
+  });
+  return violations;
 }
 
 // ── EXTRA-TICKER HELPERS ──────────────────────────────────────────────────────
@@ -481,7 +808,6 @@ function normalizeSym(s) {
   return String(s || '').trim().toUpperCase();
 }
 
-// POST /extra-ticker — User reicht Vorschlag ein (Bearer-Auth wie KI-Actions)
 async function handleProposeTicker(request, env, origin, token) {
   let body;
   try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid JSON' }, 400, origin); }
@@ -492,9 +818,6 @@ async function handleProposeTicker(request, env, origin, token) {
     return jsonResponse({ error: 'sym fehlt oder ungültig' }, 400, origin);
   }
 
-  // NEU: gegen die vom Aggregator gepushte bekannte Universe-Liste abgleichen —
-  // verhindert, dass längst vorhandene Ticker (z.B. AAPL, ohnehin in SP500_TICKERS)
-  // unnötig im Admin-Review landen.
   const knownUniverse = await kvGetArray(env, KV_KNOWN_UNIVERSE);
   if (knownUniverse.includes(sym)) {
     return jsonResponse({ ok: true, status: 'already_in_universe', sym }, 200, origin);
@@ -520,14 +843,12 @@ async function handleProposeTicker(request, env, origin, token) {
   return jsonResponse({ ok: true, status: 'pending', sym }, 200, origin);
 }
 
-// GET /extra-tickers?token=ADMIN — Pending + Approved auflisten
 async function handleListTickers(env, origin) {
   const pending  = await kvGetArray(env, KV_PENDING_TICKERS);
   const approved = await kvGetArray(env, KV_APPROVED_TICKERS);
   return jsonResponse({ pending, approved }, 200, origin);
 }
 
-// POST /extra-tickers/approve?token=ADMIN — { syms:[...] }
 async function handleApproveTickers(request, env, origin) {
   let body;
   try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid JSON' }, 400, origin); }
@@ -551,7 +872,6 @@ async function handleApproveTickers(request, env, origin) {
   return jsonResponse({ ok: true, approved: toApprove.map(e => e.sym) }, 200, origin);
 }
 
-// POST /extra-tickers/reject?token=ADMIN — { syms:[...] }
 async function handleRejectTickers(request, env, origin) {
   let body;
   try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid JSON' }, 400, origin); }
@@ -567,13 +887,13 @@ async function handleRejectTickers(request, env, origin) {
 
 const ACTION_CONFIG = {
   makro:         { model: 'claude-haiku-4-5-20251001', max_tokens: 3000 },
-  ki_briefing:   { model: 'claude-haiku-4-5-20251001', max_tokens: 2048 },
-  morning:       { model: 'claude-sonnet-4-6',          max_tokens: 2000 },
+  ki_briefing:   { model: 'claude-haiku-4-5-20251001', max_tokens: 3000 }, // v1.9: 2048->3000
+  morning:       { model: 'claude-sonnet-4-6',          max_tokens: 4500 }, // v1.10: 3000->4500 (Live-Truncation bestaetigt)
   oversold:      { model: 'claude-haiku-4-5-20251001', max_tokens: 1500 },
   meta_analysis: { model: 'claude-haiku-4-5-20251001', max_tokens: 1500 },
-  deep_dive:     { model: 'claude-sonnet-4-6',          max_tokens: 800  },
-  dark_pool:     { model: 'claude-sonnet-4-6',          max_tokens: 400  },
-  eic:           { model: 'claude-sonnet-4-6',          max_tokens: 1200 }, // EIC Expert — voller Investment-Case
+  deep_dive:     { model: 'claude-sonnet-4-6',          max_tokens: 3200  }, // v1.10: 2500->3200, vorsorglich (gleiche Risikoklasse wie morning/eic)
+  dark_pool:     { model: 'claude-sonnet-4-6',          max_tokens: 1000  }, // v1.9: 400->1000
+  eic:           { model: 'claude-sonnet-4-6',          max_tokens: 3500  }, // v1.9: 2000->3500
 };
 
 // ── SYSTEM PROMPT AUSWAHL ─────────────────────────────────────────────────────
@@ -592,7 +912,7 @@ function selectSystemPrompt(action, expertMode) {
                            ? SYSTEM_PROMPTS.deep_dive_expert()
                            : SYSTEM_PROMPTS.deep_dive_public();
     case 'dark_pool':    return SYSTEM_PROMPTS.dark_pool();
-    case 'eic':          return SYSTEM_PROMPTS.eic(); // EIC — immer Expert, kein Public-Fallback
+    case 'eic':          return SYSTEM_PROMPTS.eic();
     default:             return null;
   }
 }
@@ -606,6 +926,11 @@ async function callAnthropic(apiKey, model, maxTokens, systemPrompt, userMessage
     messages:   [{ role: 'user', content: userMessage }],
   };
 
+  // DIAGNOSE (v1.15, 30.08.2026): reine Zeitmessung um den Anthropic-Call,
+  // um Verlangsamungen (s. Changelog v1.15) vom Rest der Pipeline zu
+  // unterscheiden. Keine Verhaltensänderung.
+  const _t0 = Date.now();
+
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method:  'POST',
     headers: {
@@ -615,6 +940,9 @@ async function callAnthropic(apiKey, model, maxTokens, systemPrompt, userMessage
     },
     body: JSON.stringify(body),
   });
+
+  const _durationMs = Date.now() - _t0;
+  console.log(`[callAnthropic] model=${model} maxTokens=${maxTokens} durationMs=${_durationMs}`);
 
   if (!resp.ok) {
     const err = await resp.text();
@@ -630,12 +958,10 @@ export default {
     const origin = request.headers.get('Origin') || '';
     const url    = new URL(request.url);
 
-    // OPTIONS Preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
-    // ── ADMIN: Log-Viewer (GET /logs) ───────────────────────────
     if (url.pathname === '/logs' && request.method === 'GET') {
       const adminToken = url.searchParams.get('token');
       if (!env.STATIC_TOKEN || adminToken !== env.STATIC_TOKEN) {
@@ -650,7 +976,7 @@ export default {
         return jsonResponse({ error: 'AUTH_KV nicht gebunden', debug: kvStatus }, 500, origin);
       }
       const limit   = parseInt(url.searchParams.get('limit') || '100');
-      const filter  = url.searchParams.get('hash') || '';   // optional: filter by tokenHash
+      const filter  = url.searchParams.get('hash') || '';
       const prefix  = filter ? `log:${filter}:` : 'log:';
       const listed  = await env.AUTH_KV.list({ prefix, limit });
       const entries = [];
@@ -662,16 +988,22 @@ export default {
       }
       entries.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
 
-      // v1.6: ?rl=1 → heutige Rate-Limit-Zählerstände mitliefern
+      // NEU (29.08.2026): ?flagged=1 zeigt nur Eintraege mit
+      // Compliance-Verstoessen (s. scanForComplianceViolations()) — schnelle
+      // Sicht ohne alle Logs manuell zu durchsuchen.
+      const flaggedOnly = url.searchParams.get('flagged') === '1';
+      const filteredEntries = flaggedOnly
+        ? entries.filter(e => e.complianceFlags && e.complianceFlags.length)
+        : entries;
+
       if (url.searchParams.get('rl') === '1') {
         const rl = await rateLimitReport(env);
-        return jsonResponse({ count: entries.length, logs: entries, rateLimitsToday: rl }, 200, origin);
+        return jsonResponse({ count: filteredEntries.length, logs: filteredEntries, rateLimitsToday: rl }, 200, origin);
       }
 
-      return jsonResponse({ count: entries.length, logs: entries }, 200, origin);
+      return jsonResponse({ count: filteredEntries.length, logs: filteredEntries }, 200, origin);
     }
 
-    // ── ADMIN: Extra-Ticker Liste (GET /extra-tickers?token=ADMIN) ──────────
     if (url.pathname === '/extra-tickers' && request.method === 'GET') {
       const adminToken = url.searchParams.get('token');
       if (!env.STATIC_TOKEN || adminToken !== env.STATIC_TOKEN) {
@@ -680,7 +1012,6 @@ export default {
       return handleListTickers(env, origin);
     }
 
-    // ── ADMIN: Extra-Ticker freigeben (POST /extra-tickers/approve?token=ADMIN) ──
     if (url.pathname === '/extra-tickers/approve' && request.method === 'POST') {
       const adminToken = url.searchParams.get('token');
       if (!env.STATIC_TOKEN || adminToken !== env.STATIC_TOKEN) {
@@ -689,7 +1020,6 @@ export default {
       return handleApproveTickers(request, env, origin);
     }
 
-    // ── ADMIN: Extra-Ticker verwerfen (POST /extra-tickers/reject?token=ADMIN) ───
     if (url.pathname === '/extra-tickers/reject' && request.method === 'POST') {
       const adminToken = url.searchParams.get('token');
       if (!env.STATIC_TOKEN || adminToken !== env.STATIC_TOKEN) {
@@ -698,7 +1028,6 @@ export default {
       return handleRejectTickers(request, env, origin);
     }
 
-    // ── USER: Extra-Ticker vorschlagen (POST /extra-ticker, Bearer-Auth) ────
     if (url.pathname === '/extra-ticker' && request.method === 'POST') {
       const authHeader = request.headers.get('Authorization') || '';
       const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -708,7 +1037,6 @@ export default {
       return handleProposeTicker(request, env, origin, token);
     }
 
-    // Nur POST (für alle übrigen Routen — KI-Proxy)
     if (request.method !== 'POST') {
       return new Response('Method Not Allowed', {
         status: 405,
@@ -716,7 +1044,6 @@ export default {
       });
     }
 
-    // ── AUTH (Phase 1: statischer Bearer Token + optionaler OWNER_TOKEN) ──
     const authHeader = request.headers.get('Authorization') || '';
     const token      = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
     const isOwner    = !!env.OWNER_TOKEN && token === env.OWNER_TOKEN;
@@ -727,7 +1054,6 @@ export default {
       return jsonResponse({ error: 'Unauthorized' }, 401, origin);
     }
 
-    // ── REQUEST BODY ─────────────────────────────────────────────
     let body;
     try {
       body = await request.json();
@@ -735,25 +1061,52 @@ export default {
       return jsonResponse({ error: 'Invalid JSON' }, 400, origin);
     }
 
-    const { action, payload, expert_mode = false } = body;
+    const { action, payload, expert_mode: expertModeRequested = false } = body;
 
     if (!action || !payload) {
       return jsonResponse({ error: 'action und payload erforderlich' }, 400, origin);
     }
 
-    // ── ACTION VALIDIERUNG ────────────────────────────────────────
     const cfg = ACTION_CONFIG[action];
     if (!cfg) {
       return jsonResponse({ error: `Unbekannte action: ${action}` }, 400, origin);
+    }
+
+    // SICHERHEITS-FIX (v1.11, 27.08.2026, Legal-Briefing-Audit Backlog №60):
+    // expert_mode war bisher ein reines Client-Flag — jeder Inhaber des
+    // geteilten STATIC_TOKEN (also jeder Beta-Tester) konnte sich per
+    // clientseitigem EIC-PIN (localStorage) selbst freischalten und damit
+    // Axels reale Portfoliodaten (NAV, Positionen) aus den Expert-Prompts
+    // einsehen. Da STATIC_TOKEN von allen Beta-Nutzern geteilt wird, kann
+    // eine Token-basierte Allowlist einzelne Nutzer nicht unterscheiden —
+    // OWNER_TOKEN ist das einzige Merkmal, das Axel persönlich von allen
+    // anderen Token-Inhabern trennt. Daher: expert_mode wird jetzt serverseitig
+    // hart auf isOwner geprüft und nicht mehr vom Client übernommen. Jede
+    // Anfrage mit STATIC_TOKEN bekommt zwingend den Public-Prompt, unabhängig
+    // vom gesendeten Flag oder gesetztem PIN.
+    if (expertModeRequested && !isOwner) {
+      logRequest(env, token, `${action}_EXPERT_DENIED`, origin,
+        request.headers.get('CF-Ray') || '', false);
+    }
+    const expert_mode = expertModeRequested && isOwner;
+
+    // ZUSATZFUND (v1.11, beim Umsetzen von №60 entdeckt): die 'eic'-Action hat
+    // KEINEN Public/Expert-Split in selectSystemPrompt() — sie liefert IMMER
+    // den vollen persönlichen Investment-Case (Axels reale Portfoliodaten),
+    // unabhängig von expert_mode. Im aktuellen Frontend nicht aufgerufen
+    // (kein 'eic'-Call-Site in axel-scanner/index.html gefunden), aber über
+    // die API mit dem geteilten STATIC_TOKEN weiterhin erreichbar. Gleiche
+    // Fundklasse wie oben — daher zusätzlich hart auf isOwner gesperrt.
+    if (action === 'eic' && !isOwner) {
+      logRequest(env, token, 'eic_EXPERT_DENIED', origin,
+        request.headers.get('CF-Ray') || '', false);
+      return jsonResponse({ error: 'Diese Funktion ist nur für den Betreiber verfügbar.' }, 403, origin);
     }
 
     const rawSystemPrompt = selectSystemPrompt(action, expert_mode);
     if (!rawSystemPrompt) {
       return jsonResponse({ error: 'Kein System-Prompt für action' }, 500, origin);
     }
-    // ── DATUM-GROUNDING (Anti-Halluzination) ─────────────────────
-    // Serverseitig injiziert, damit das Modell niemals ein Datum
-    // erfinden muss — auch wenn der Frontend-Prompt keines enthält.
     const todayDE = new Date().toLocaleDateString('de-DE', {
       timeZone: 'Europe/Berlin',
       day: '2-digit', month: '2-digit', year: 'numeric'
@@ -764,10 +1117,6 @@ export default {
       'es sei denn, es steht explizit in den Nutzerdaten.\n\n' +
       rawSystemPrompt;
 
-    // ── RATE-LIMIT (v1.6/v1.7) — vor dem Anthropic-Call ───────────
-    // Phase 1: EIN statischer Token für alle → Subjekt = hash(Token|IP),
-    // damit das Limit näherungsweise pro Nutzer statt global wirkt.
-    // v1.7: OWNER_TOKEN ist vollständig ausgenommen (IP-unabhängig).
     const clientIP    = request.headers.get('CF-Connecting-IP') || 'no-ip';
     const subjectHash = await hashToken(`${token}|${clientIP}`);
     const rl          = isOwner
@@ -785,7 +1134,6 @@ export default {
       }, 429, origin);
     }
 
-    // ── ANTHROPIC CALL ────────────────────────────────────────────
     try {
       const data = await callAnthropic(
         env.ANTHROPIC_API_KEY,
@@ -797,8 +1145,20 @@ export default {
 
       const text = data?.content?.[0]?.text || '';
 
+      // Compliance-Scan nur im Public-Modus (expert_mode ist bewusst
+      // direktiv, s. SUITE.md №65/№66) — nicht blockierend, nur geloggt.
+      // ERWEITERT (06.09.2026): plus struktureller Ticker-Scope-Scan (s.
+      // scanForTickerScopeViolations() oben) — beide Scans zusammengeführt,
+      // damit /logs weiterhin ein einziges complianceFlags-Feld sieht.
+      const complianceFlags = expert_mode
+        ? []
+        : scanForComplianceViolations(text).concat(scanForTickerScopeViolations(text));
+      if (complianceFlags.length) {
+        console.warn('[COMPLIANCE]', action, complianceFlags.join(', '));
+      }
+
       const cfRay = request.headers.get('CF-Ray') || '';
-      await logRequest(env, token, action, origin, cfRay, true);
+      await logRequest(env, token, action, origin, cfRay, true, complianceFlags);
 
       return jsonResponse({ text, model: cfg.model }, 200, origin);
 

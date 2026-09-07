@@ -1,6 +1,17 @@
 /**
  * ko-ai.ahildebrand.workers.dev
  * ══════════════════════════════════════════════════════════════════
+ * UnderlyingIQ — KI-Proxy Worker v1.22
+ *
+ * NEU in v1.22 (08.09.2026, Live-Test-Fund, vier parallele Tests nach
+ *   v1.21): max_tokens für ki_briefing im EIC-Modus von 5000 auf 7000
+ *   erhöht — trotz der v1.19-Erhöhung brach die Antwort bei 3 von 4
+ *   getesteten Strategien (collar/cc/weekly_income) weiterhin mitten im
+ *   Satz/Wort ab. Kombiniert mit einer konkreten Wort-Budget-Vorgabe pro
+ *   Kandidat in ko-prompts.js (v2.52.2) als komplementärem Hebel — dieses
+ *   Limit dient als Sicherheitsnetz. Betrifft NUR ki_briefing im EIC-Modus;
+ *   Public-Limit (3000) und alle anderen Actions unveraendert.
+ *
  * UnderlyingIQ — KI-Proxy Worker v1.21
  *
  * NEU in v1.21 (08.09.2026, Live-Test-Fund, atmna-Sechstlauf über Options-
@@ -1275,16 +1286,18 @@ export default {
       }, 429, origin);
     }
 
-    // ERHÖHTES max_tokens FÜR EIC-MODUS (07.09.2026, Live-Test-Fund):
-    // ki_briefing lief bei expert_mode=true mit dem Standard-Limit (3000,
-    // s. ACTION_CONFIG) sichtbar in einen Abbruch — der EIC Master Prompt
-    // (Ebenen 1-22 + §23 Handlungsempfehlung, s. ko-prompts.js
-    // _eicMasterPrompt()) braucht bei mehreren detailliert behandelten
-    // Kandidaten mehr Platz als der kürzere Public-9-Punkte-Output. Betrifft
-    // NUR ki_briefing im EIC-Modus — Public-Limit (3000) und alle anderen
-    // Actions bleiben unveraendert.
+    // ERHÖHTES max_tokens FÜR EIC-MODUS (07.09.2026, zuletzt 5000; 08.09.2026
+    // ERNEUT ERHÖHT — Live-Test-Fund: trotz 5000 brach die Antwort bei 3 von
+    // 4 parallel getesteten Strategien (collar/cc/weekly_income) weiterhin
+    // mitten im Satz/Wort ab, obwohl §23s Kompaktheits-Vorgabe (v2.49.2)
+    // bereits nachgeschärft wurde. Zusammen mit einer konkreten Wort-Budget-
+    // Vorgabe pro Kandidat (s. ko-prompts.js) als zweiter, komplementärer
+    // Hebel — dieses Limit ist das Sicherheitsnetz, falls die Kompaktheit
+    // trotzdem nicht durchgehend greift. Betrifft NUR ki_briefing im EIC-
+    // Modus — Public-Limit (3000) und alle anderen Actions bleiben
+    // unveraendert.
     const effectiveMaxTokens = (action === 'ki_briefing' && expert_mode)
-      ? 5000
+      ? 7000
       : cfg.max_tokens;
 
     try {

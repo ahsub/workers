@@ -1,6 +1,26 @@
 /**
  * ko-ai.ahildebrand.workers.dev
  * ══════════════════════════════════════════════════════════════════
+ * UnderlyingIQ — KI-Proxy Worker v1.20
+ *
+ * NEU in v1.20 (08.09.2026, Axel-Entscheidung nach fünf Live-Test-Funden am
+ *   Vortag): §23-Zahlen-Erfindungs-Scan (`scanForNumericFabrication()`,
+ *   `extractHandlungsempfehlung()`, `extractNumericTokens()`) ergänzt —
+ *   dieselbe serverseitige Sichtbarkeits-Strategie, die sich bei der
+ *   Ticker-Scope-Sperre (v1.13) bereits bewährt hat, jetzt für eine andere
+ *   Fundklasse: erfundene $-Beträge/%-Werte/Kontrakt-Stückzahlen im §23-
+ *   "HANDLUNGSEMPFEHLUNG"-Block (ko-prompts.js `_eicMasterPrompt()`), die
+ *   NICHT im gesendeten payload vorkommen. Vier promptseitige Nachschärfungs-
+ *   runden (ko-prompts.js v2.48.2 bis v2.49.4) hatten das Muster nicht
+ *   vollständig gestoppt — u.a. tauchte eine im Prompt bereits korrekt
+ *   vorgegebene Zahl ("dreistelliger Bereich") ignoriert und durch eine
+ *   erfundene ("50 Kontrakte") ersetzt auf. Scan läuft nur im EIC-Modus
+ *   (expert_mode), nicht blockierend, nur geloggt (`/logs`) — identisches
+ *   Prinzip wie scanForComplianceViolations()/scanForTickerScopeViolations().
+ *   Isoliert gegen alle fünf dokumentierten Live-Test-Funde vom 07.09.2026
+ *   verifiziert (Node-Test: alle fünf Fundklassen erkannt, echte Prompt-Werte
+ *   erzeugen keinen Fehlalarm, kein erkennbarer §23-Block = kein Scan).
+ *
  * UnderlyingIQ — KI-Proxy Worker v1.19
  *
  * NEU in v1.19 (07.09.2026, Live-Test-Fund, erster EIC-csp_wheel-Lauf über
@@ -918,6 +938,63 @@ async function handleRejectTickers(request, env, origin) {
   return jsonResponse({ ok: true, rejected: syms }, 200, origin);
 }
 
+// ── §23 NUMERIC-FABRICATION-SCAN (v1.20, 08.09.2026) ────────────────────────
+// Ergänzt die beiden Scanner oben um eine EIC-exklusive Prüfung: findet
+// $-Beträge und %-Werte im "HANDLUNGSEMPFEHLUNG (EIC-exklusiv)"-Block (§23,
+// ko-prompts.js _eicMasterPrompt()), die NICHT im an das Modell gesendeten
+// payload vorkommen — können also weder ein echter UIQ-Datenwert (Strike,
+// IVP-Perzentil, Kurs, ATR) noch eine im Prompt genannte Marktkonvention
+// (30-45 DTE, 50/60/70%-Gewinnstufen, 5%-Strike-Staffelung) sein.
+// Auslöser: FÜNF Live-Test-Funde am 07.09.2026 (csp_wheel/atmna), bei denen
+// trotz vier promptseitiger Nachschärfungsrunden (ko-prompts.js v2.48.2 bis
+// v2.49.4) immer wieder NEUE erfundene Zahlen auftauchten (Break-even-Kurse,
+// %-Mindestprämienschwellen, Bid-Ask-Spread-Dollarbeträge, eine falsche
+// OI-Mindestzahl — obwohl die korrekte Zahl im Prompt selbst stand). Axel-
+// Entscheidung nach dem fünften Fund: serverseitige Sichtbarkeit statt einem
+// sechsten Prompt-Patch — dasselbe Muster, das sich bei der Ticker-Scope-
+// Sperre (v1.13) bereits bewährt hat.
+// HEURISTIK, KEIN GARANTIERT VOLLSTÄNDIGER PARSER (wie die beiden Scanner
+// oben): ein $-/%-Wert im Handlungsempfehlungs-Block, der als Zeichenkette
+// nicht im payload auftaucht, ist ein STARKES Fabrikationssignal, aber kein
+// Beweis (z.B. könnte das Modell einen echten Prompt-Wert leicht anders
+// formatieren, etwa "458,57" vs. "458.57" oder mit/ohne Tausenderpunkt —
+// dann False Positive). Dient der Sichtbarkeit im /logs-Endpoint, NICHT der
+// automatischen Korrektur oder Blockierung — genau wie die beiden Scanner
+// oben. Läuft nur, wenn expert_mode aktiv UND ein "HANDLUNGSEMPFEHLUNG"-
+// Block überhaupt erkennbar ist (kein Treffer = kein Scan, kein Fehlalarm).
+function extractHandlungsempfehlung(text) {
+  if (!text) return '';
+  const m = text.match(/HANDLUNGSEMPFEHLUNG[^\n]*\n([\s\S]*)/i);
+  return m ? m[1] : '';
+}
+
+function extractNumericTokens(str) {
+  if (!str) return [];
+  // $-Beträge ($123,45 / $123.45 / $123), %-Werte (12,5% / 12.5% / 12%),
+  // und Kontrakt-Stückzahlen (z.B. "50 Kontrakte") — letztere ergänzt nach
+  // dem Live-Fund "OI mindestens 50 Kontrakte" (v2.49.4-Beleg), der vom
+  // reinen $/%-Muster nicht erfasst wurde, da weder $ noch % beteiligt sind.
+  const dollarMatches = str.match(/\$\s?\d[\d.,]*/g) || [];
+  const pctMatches = str.match(/\d[\d.,]*\s?%/g) || [];
+  const kontrakteMatches = str.match(/\d[\d.,]*\s?Kontrakte[n]?/gi) || [];
+  return dollarMatches.concat(pctMatches).concat(kontrakteMatches);
+}
+
+function scanForNumericFabrication(text, payload) {
+  if (!text || !payload) return [];
+  const block = extractHandlungsempfehlung(text);
+  if (!block) return [];
+  const candidates = extractNumericTokens(block);
+  const violations = [];
+  candidates.forEach(function(tok) {
+    const normalized = tok.replace(/\s/g, '');
+    if (!payload.includes(normalized) && !payload.includes(tok)) {
+      violations.push('ZAHL-ERFUNDEN:' + tok.trim());
+    }
+  });
+  return violations;
+}
+
 const ACTION_CONFIG = {
   makro:         { model: 'claude-haiku-4-5-20251001', max_tokens: 3000 },
   ki_briefing:   { model: 'claude-haiku-4-5-20251001', max_tokens: 3000 }, // v1.9: 2048->3000
@@ -1190,13 +1267,14 @@ export default {
 
       const text = data?.content?.[0]?.text || '';
 
-      // Compliance-Scan nur im Public-Modus (expert_mode ist bewusst
-      // direktiv, s. SUITE.md №65/№66) — nicht blockierend, nur geloggt.
-      // ERWEITERT (06.09.2026): plus struktureller Ticker-Scope-Scan (s.
-      // scanForTickerScopeViolations() oben) — beide Scans zusammengeführt,
-      // damit /logs weiterhin ein einziges complianceFlags-Feld sieht.
+      // Compliance-/Ticker-Scope-Scan nur im Public-Modus (expert_mode ist
+      // bewusst direktiv, s. SUITE.md №65/№66) — nicht blockierend, nur
+      // geloggt. Im EIC-Modus stattdessen der §23-Zahlen-Erfindungs-Scan
+      // (v1.20, s. scanForNumericFabrication() oben) — andere Fundklasse,
+      // deshalb anderer Scanner, aber dasselbe complianceFlags-Feld für
+      // /logs, damit keine zweite Log-Struktur entsteht.
       const complianceFlags = expert_mode
-        ? []
+        ? scanForNumericFabrication(text, payload)
         : scanForComplianceViolations(text).concat(scanForTickerScopeViolations(text));
       if (complianceFlags.length) {
         console.warn('[COMPLIANCE]', action, complianceFlags.join(', '));

@@ -1,6 +1,23 @@
 /**
  * ko-ai.ahildebrand.workers.dev
  * ══════════════════════════════════════════════════════════════════
+ * UnderlyingIQ — KI-Proxy Worker v1.21
+ *
+ * NEU in v1.21 (08.09.2026, Live-Test-Fund, atmna-Sechstlauf über Options-
+ *   Desk — erster Test nach v2.49.4/v1.20): drei von vier vorherigen
+ *   Fundklassen (Break-even, %-Prämienschwelle, OI-Zahlenfehler) traten
+ *   NICHT mehr auf — die Ludwig-Kriterium-Zahl ("dreistelliger Bereich")
+ *   wurde diesmal korrekt übernommen und zugeschrieben. NEUE Umgehungs-
+ *   variante gefunden: ein Bid-Ask-Schwellenwert wurde ausdrücklich MIT dem
+ *   Hinweis "keine UIQ-Zahl verfügbar" genannt, aber trotzdem erfunden —
+ *   diesmal in der Einheit "Cent" statt eines $-Zeichens, wodurch das v1.20-
+ *   Muster umgangen wurde. `extractNumericTokens()` um Cent-Erkennung
+ *   ergänzt. Bekannte, akzeptierte Fehlalarm-Klasse dokumentiert: eine
+ *   wortbasierte Konvention ("dreistellig"), korrekt in eine Zahl übersetzt
+ *   ("100 Kontrakte"), schlägt beim reinen Zeichenketten-Abgleich ebenfalls
+ *   an — bewusst nicht mit Spezialfall-Logik behoben. Funktional verifiziert
+ *   (Node-Test): Cent-Fund erkannt.
+ *
  * UnderlyingIQ — KI-Proxy Worker v1.20
  *
  * NEU in v1.20 (08.09.2026, Axel-Entscheidung nach fünf Live-Test-Funden am
@@ -958,10 +975,18 @@ async function handleRejectTickers(request, env, origin) {
 // nicht im payload auftaucht, ist ein STARKES Fabrikationssignal, aber kein
 // Beweis (z.B. könnte das Modell einen echten Prompt-Wert leicht anders
 // formatieren, etwa "458,57" vs. "458.57" oder mit/ohne Tausenderpunkt —
-// dann False Positive). Dient der Sichtbarkeit im /logs-Endpoint, NICHT der
-// automatischen Korrektur oder Blockierung — genau wie die beiden Scanner
-// oben. Läuft nur, wenn expert_mode aktiv UND ein "HANDLUNGSEMPFEHLUNG"-
-// Block überhaupt erkennbar ist (kein Treffer = kein Scan, kein Fehlalarm).
+// dann False Positive). BEKANNTE FEHLALARM-KLASSE (Live-Fund 08.09.2026,
+// atmna-Sechstlauf): eine wortbasierte Konvention im Prompt ("dreistelliger
+// Bereich"), korrekt vom Modell in eine Zahl übersetzt ("100 Kontrakte"),
+// schlägt hier ebenfalls an — der reine Zeichenketten-Abgleich kann "100"
+// nicht mit "dreistellig" verknüpfen. Bewusst nicht mit Spezialfall-Logik
+// behoben (würde Domänenwissen fest verdrahten, das dieser Scanner gerade
+// NICHT haben soll) — im /logs-Review ist das ein akzeptabler, erkennbarer
+// Fehlalarm, kein Blocker. Dient der Sichtbarkeit im /logs-Endpoint, NICHT
+// der automatischen Korrektur oder Blockierung — genau wie die beiden
+// Scanner oben. Läuft nur, wenn expert_mode aktiv UND ein "HANDLUNGS-
+// EMPFEHLUNG"-Block überhaupt erkennbar ist (kein Treffer = kein Scan,
+// kein Fehlalarm).
 function extractHandlungsempfehlung(text) {
   if (!text) return '';
   const m = text.match(/HANDLUNGSEMPFEHLUNG[^\n]*\n([\s\S]*)/i);
@@ -971,13 +996,19 @@ function extractHandlungsempfehlung(text) {
 function extractNumericTokens(str) {
   if (!str) return [];
   // $-Beträge ($123,45 / $123.45 / $123), %-Werte (12,5% / 12.5% / 12%),
-  // und Kontrakt-Stückzahlen (z.B. "50 Kontrakte") — letztere ergänzt nach
-  // dem Live-Fund "OI mindestens 50 Kontrakte" (v2.49.4-Beleg), der vom
-  // reinen $/%-Muster nicht erfasst wurde, da weder $ noch % beteiligt sind.
+  // Kontrakt-Stückzahlen ("50 Kontrakte") und Cent-Angaben ("5 Cent") —
+  // letztere ergänzt nach Live-Fund 08.09.2026 (atmna-Sechstlauf): das
+  // Modell nannte einen erfundenen Bid-Ask-Schwellenwert ausdrücklich MIT
+  // dem Hinweis "keine UIQ-Zahl verfügbar" davor, wich aber auf die Einheit
+  // "Cent" statt eines $-Zeichens aus und entging damit dem bisherigen
+  // Muster — dieselbe Fundklasse, neue Verkleidung, kein neues Prompt-
+  // Verbot noetig (Fund-Prinzip s. §23-Kommentar in ko-prompts.js), nur
+  // eine weitere Einheit im Scanner.
   const dollarMatches = str.match(/\$\s?\d[\d.,]*/g) || [];
   const pctMatches = str.match(/\d[\d.,]*\s?%/g) || [];
   const kontrakteMatches = str.match(/\d[\d.,]*\s?Kontrakte[n]?/gi) || [];
-  return dollarMatches.concat(pctMatches).concat(kontrakteMatches);
+  const centMatches = str.match(/\d[\d.,]*\s?Cent/gi) || [];
+  return dollarMatches.concat(pctMatches).concat(kontrakteMatches).concat(centMatches);
 }
 
 function scanForNumericFabrication(text, payload) {

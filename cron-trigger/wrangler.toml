@@ -3,8 +3,14 @@ main = "ko-cron-trigger.js"
 compatibility_date = "2026-07-10"
 
 [triggers]
-# Identisch zum GitHub-Cron (03:37 UTC, Mo-Sa) — als zuverlässiger Zweit-Trigger.
-# GitHub Actions' eigener Scheduler läuft "Best Effort" und kann Läufe
-# ersatzlos ausfallen lassen (siehe 09./10.07.2026). Cloudflare Cron Triggers
-# sind für genau diesen Zweck gebaut und laufen deutlich verlässlicher.
-crons = ["37 3 * * 1-6"]
+# Identisch zum GitHub-Cron (22:00 UTC, Mo-Fr, seit market-aggregator.yml
+# v1.2 vom 11.09.2026 — vorher 03:37 UTC Mo-Sa) — als zuverlässiger
+# Zweit-Trigger. GitHub Actions' eigener Scheduler läuft "Best Effort" und
+# kann Läufe ersatzlos ausfallen lassen (siehe 09./10.07.2026). Cloudflare
+# Cron Triggers sind für genau diesen Zweck gebaut und laufen deutlich
+# verlässlicher.
+# WICHTIG: dieser Trigger loest bei jedem Feuern workflow_dispatch aus, was
+# laut market-aggregator.yml IMMER die Public-Digest-Generierung mit
+# ausloest (unabhaengig von der Uhrzeit) — muss daher synchron zur echten
+# EOD-Cron-Zeit bleiben, sonst entsteht wieder ein Vor-Schluss-Digest-Lauf.
+crons = ["00 22 * * 1-5"]

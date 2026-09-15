@@ -1,6 +1,31 @@
 /**
  * ko-ai.ahildebrand.workers.dev
  * ══════════════════════════════════════════════════════════════════
+ * UnderlyingIQ — KI-Proxy Worker v1.23
+ *
+ * NEU in v1.23 (15.09.2026, Axel-Entscheidung): AI-Budget-Logging für die
+ *   Live-On-Demand-Pfade dieses Workers (morning_briefing, ki_briefing
+ *   inkl. EIC-Modus, oversold, meta_analysis, deep_dive, dark_pool, eic) —
+ *   Live-Pendant zum bereits bestehenden Budget-Logging in
+ *   generate_public_recommendations.js (Baustein 8b, market_aggregator.py-
+ *   Repo, gleiche Session), das nur den public_digest-Pfad abdeckt. Neue
+ *   Funktion recordAiBudgetEntry() schreibt pro erfolgreichem Anthropic-
+ *   Call einen eigenen KV-Eintrag (`budget:{date}:{timestamp}`, analog zum
+ *   bestehenden `log:{tokenHash}:{timestamp}`-Schema von logRequest()) —
+ *   bewusst NICHT ein aggregierter Tages-Key, da Cloudflare KV eventually
+ *   consistent ist und Read-Modify-Write bei parallelen Requests Calls
+ *   stillschweigend verlieren würde; Aggregation passiert stattdessen beim
+ *   Lesen. Neuer Lese-Zweig `/logs?budget=1` (optional `&date=YYYY-MM-DD`),
+ *   liefert rohe Einträge PLUS nach `action` aggregierte Summen
+ *   (calls/tokenInputTotal/tokenOutputTotal/estimatedCostUsdTotal). Preise
+ *   (ANTHROPIC_PRICE_PER_*_TOKEN_USD) bewusst als `null` belassen — in
+ *   dieser Sandbox nicht gegen Anthropics aktuelle Preisseite verifizierbar;
+ *   token_input/token_output sind ab dem ersten Request trotzdem verlässlich,
+ *   estimatedCostUsd bleibt `null` bis Axel die Konstanten befüllt (TODO-
+ *   Kommentar direkt bei den Konstanten). Fehlgeschlagene Calls (catch-
+ *   Zweig) werden NICHT geloggt — Anthropic berechnet i.d.R. keine
+ *   Output-Kosten für nicht generierte Antworten.
+ *
  * UnderlyingIQ — KI-Proxy Worker v1.22
  *
  * NEU in v1.22 (08.09.2026, Live-Test-Fund, vier parallele Tests nach
@@ -731,6 +756,60 @@ async function logRequest(env, token, action, origin, cfRay, success, compliance
   }
 }
 
+// ── AI-BUDGET-LOGGING (UIQ Spec v1.1 §1.1, 15.09.2026) ─────────────────────
+// Live-Pendant zum bereits bestehenden Budget-Logging in
+// generate_public_recommendations.js (Baustein 8b, gleiche Session) —
+// dort deckt es den public_digest-Pfad ab, hier die Live-On-Demand-Pfade
+// dieses Workers (morning_briefing, ki_briefing inkl. EIC-Modus, oversold,
+// meta_analysis, deep_dive, dark_pool, eic). Owner-only lesbar (s.
+// /logs?budget=1 unten, gleiche STATIC_TOKEN-Absicherung wie /logs).
+//
+// Bewusst EIN KV-Eintrag PRO Request (Key-Schema `budget:{date}:{ts}`,
+// analog zu den bestehenden `log:{tokenHash}:{ts}`-Eintraegen), NICHT ein
+// einziger aggregierter Tages-Key: Cloudflare KV ist eventually consistent
+// und fuer Read-Modify-Write-Aggregation (mehrere parallele Requests
+// erhoehen denselben Zaehler) ungeeignet — Race-Conditions wuerden Calls
+// stillschweigend verlieren. Aggregation passiert stattdessen beim Lesen
+// (s. /logs?budget=1), exakt wie /logs es fuer die normalen Request-Logs
+// bereits macht.
+//
+// PREISE UNVERIFIZIERT (wie im JS-Pendant) — token_input/token_output sind
+// verlaesslich, estimated_cost_usd bleibt null bis die Konstanten unten
+// gegen https://docs.claude.com/en/docs/about-claude/pricing geprueft sind.
+const ANTHROPIC_PRICE_PER_INPUT_TOKEN_USD  = null;  // TODO(Axel): verifizieren
+const ANTHROPIC_PRICE_PER_OUTPUT_TOKEN_USD = null;  // TODO(Axel): verifizieren
+
+function estimateCostUsd(inputTokens, outputTokens) {
+  if (ANTHROPIC_PRICE_PER_INPUT_TOKEN_USD == null || ANTHROPIC_PRICE_PER_OUTPUT_TOKEN_USD == null) {
+    return null;
+  }
+  return +(inputTokens * ANTHROPIC_PRICE_PER_INPUT_TOKEN_USD
+    + outputTokens * ANTHROPIC_PRICE_PER_OUTPUT_TOKEN_USD).toFixed(6);
+}
+
+async function recordAiBudgetEntry(env, { action, model, usage, expertMode }) {
+  if (!env.AUTH_KV) return;
+  try {
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const inputTokens  = usage?.input_tokens  ?? null;
+    const outputTokens = usage?.output_tokens ?? null;
+    const key   = `budget:${dateStr}:${Date.now()}`;
+    const entry = JSON.stringify({
+      date: dateStr,
+      action,
+      model,
+      expertMode: !!expertMode,
+      tokenInput:  inputTokens,
+      tokenOutput: outputTokens,
+      estimatedCostUsd: estimateCostUsd(inputTokens ?? 0, outputTokens ?? 0),
+      timestamp: new Date().toISOString(),
+    });
+    await env.AUTH_KV.put(key, entry, { expirationTtl: 60 * 60 * 24 * 90 });
+  } catch (e) {
+    console.error('[BUDGET] KV write failed:', e.message);
+  }
+}
+
 // ── COMPLIANCE-SCAN (v1.12, 29.08.2026) ─────────────────────────────────────
 // Deterministischer Nachpruef-Schritt gegen UIQ-REGULATORY-LANGUAGE-SPEC.md.
 // Entstanden nach dem CSP/Wheel-Live-Test: "attraktiv" und "Praemienerwartung"
@@ -1127,6 +1206,50 @@ export default {
       if (!env.AUTH_KV) {
         return jsonResponse({ error: 'AUTH_KV nicht gebunden', debug: kvStatus }, 500, origin);
       }
+
+      // NEU (15.09.2026): ?budget=1 liest die AI-Budget-Log-Eintraege
+      // (s. recordAiBudgetEntry() oben) statt der normalen Request-Logs —
+      // eigener Zweig mit eigenem Key-Prefix (`budget:` statt `log:`) und
+      // eigener Aggregation (Summe pro action), da die Fragestellung eine
+      // andere ist ("was kostet welche Funktion") als bei den normalen
+      // Logs ("wer hat wann was aufgerufen"). Optional ?date=YYYY-MM-DD
+      // grenzt auf einen Tag ein (nutzt den Key-Prefix direkt, kein Scan).
+      if (url.searchParams.get('budget') === '1') {
+        const dateFilter   = url.searchParams.get('date') || '';
+        const budgetPrefix = dateFilter ? `budget:${dateFilter}:` : 'budget:';
+        const budgetLimit  = parseInt(url.searchParams.get('limit') || '1000');
+        const budgetListed = await env.AUTH_KV.list({ prefix: budgetPrefix, limit: budgetLimit });
+        const budgetEntries = [];
+        for (const key of budgetListed.keys) {
+          const val = await env.AUTH_KV.get(key.name);
+          if (val) {
+            try { budgetEntries.push(JSON.parse(val)); } catch(e) {}
+          }
+        }
+        budgetEntries.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+
+        const byAction = {};
+        for (const e of budgetEntries) {
+          const a = e.action || 'unknown';
+          if (!byAction[a]) {
+            byAction[a] = { calls: 0, tokenInputTotal: 0, tokenOutputTotal: 0, estimatedCostUsdTotal: 0, costUnknown: false };
+          }
+          byAction[a].calls += 1;
+          byAction[a].tokenInputTotal  += e.tokenInput  || 0;
+          byAction[a].tokenOutputTotal += e.tokenOutput || 0;
+          if (e.estimatedCostUsd == null) byAction[a].costUnknown = true;
+          else byAction[a].estimatedCostUsdTotal += e.estimatedCostUsd;
+        }
+        for (const a of Object.keys(byAction)) {
+          byAction[a].estimatedCostUsdTotal = byAction[a].costUnknown
+            ? null
+            : +byAction[a].estimatedCostUsdTotal.toFixed(6);
+          delete byAction[a].costUnknown;
+        }
+
+        return jsonResponse({ count: budgetEntries.length, byAction, entries: budgetEntries }, 200, origin);
+      }
+
       const limit   = parseInt(url.searchParams.get('limit') || '100');
       const filter  = url.searchParams.get('hash') || '';
       const prefix  = filter ? `log:${filter}:` : 'log:';
@@ -1326,6 +1449,7 @@ export default {
 
       const cfRay = request.headers.get('CF-Ray') || '';
       await logRequest(env, token, action, origin, cfRay, true, complianceFlags);
+      await recordAiBudgetEntry(env, { action, model: cfg.model, usage: data.usage, expertMode: expert_mode });
 
       return jsonResponse({ text, model: cfg.model }, 200, origin);
 
